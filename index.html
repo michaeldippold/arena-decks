@@ -486,6 +486,7 @@
       </svg>
       <div class="share-url" id="shareUrl"></div>
       <button class="btn-copy" id="copyBtn" onclick="copyUrl()">Copy Link</button>
+      <button class="btn-copy" id="exportBtn" onclick="exportToArena()">Export to Arena</button>
     </div>
 
     <div class="controls-row">
@@ -541,6 +542,8 @@
 
 <script>
 'use strict';
+
+let currentDeckText = '';
 
 // ── Supabase ───────────────────────────────────────────────────────────────
 
@@ -894,6 +897,7 @@ async function importDeck() {
 }
 
 async function showDeckPage(raw, url) {
+  currentDeckText = raw;
   document.getElementById('importPage').style.display = 'none';
   document.getElementById('deckPage').style.display   = 'block';
   document.getElementById('loadingState').style.display  = 'flex';
@@ -923,6 +927,19 @@ async function showDeckPage(raw, url) {
     document.getElementById('loadingState').innerHTML =
       `<div style="color:var(--danger)">Failed to load card data — please try again.</div>`;
   }
+}
+
+function exportToArena() {
+  if (!currentDeckText) return;
+  navigator.clipboard.writeText(currentDeckText).then(() => {
+    const btn = document.getElementById('exportBtn');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = 'Export to Arena';
+      btn.classList.remove('copied');
+    }, 2000);
+  });
 }
 
 function copyUrl() {
