@@ -559,12 +559,28 @@ function generateId() {
     .join('');
 }
 
+async function hashDeck(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 async function saveDeck(deckText) {
+  const hash = await hashDeck(deckText);
+
+  // If this exact decklist was saved before, reuse the existing ID
+  const checkRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/decks?deck_hash=eq.${encodeURIComponent(hash)}&select=id&limit=1`,
+    { headers: SB_HEADERS }
+  );
+  const existing = await checkRes.json();
+  if (existing.length) return existing[0].id;
+
+  // New deck — insert with hash for future dedup
   const id  = generateId();
   const res = await fetch(`${SUPABASE_URL}/rest/v1/decks`, {
     method:  'POST',
     headers: { ...SB_HEADERS, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-    body:    JSON.stringify({ id, deck_text: deckText }),
+    body:    JSON.stringify({ id, deck_text: deckText, deck_hash: hash }),
   });
   if (!res.ok) throw new Error(`Save failed: ${res.status}`);
   return id;
