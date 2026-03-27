@@ -606,8 +606,17 @@ const TYPE_ORDER  = ['creature', 'planeswalker', 'spell', 'land'];
 const TYPE_LABELS = { creature: 'Creatures', planeswalker: 'Planeswalkers', spell: 'Spells', land: 'Lands' };
 
 function makeCardEl(entry, cardMap, sectionKey) {
-  const lookup = cardMap[`${entry.set}/${entry.number}`];
+  const mapKey = `${entry.set}/${entry.number}`;
+  const lookup = cardMap[mapKey];
   const uris   = imageUris(lookup);
+
+  if (!lookup) {
+    console.warn(`[arena-decks] Card not found in Scryfall response:`, { name: entry.name, set: entry.set, number: entry.number, mapKey });
+  } else if (!uris) {
+    console.warn(`[arena-decks] Card found but has no image_uris:`, { name: lookup.name, layout: lookup.layout, card_faces: lookup.card_faces });
+  } else if (!uris.small) {
+    console.warn(`[arena-decks] Card has image_uris but no 'small':`, { name: lookup.name, uris });
+  }
 
   const el = document.createElement('div');
   el.className = 'card-item';
@@ -626,6 +635,7 @@ function makeCardEl(entry, cardMap, sectionKey) {
     img.src = uris.small;
     img.onload = () => img.classList.remove('loading-img');
     img.onerror = () => {
+      console.error(`[arena-decks] Image failed to load for "${lookup?.name ?? entry.name}":`, uris.small);
       img.style.background = 'var(--surface2)';
       img.style.minHeight  = '161px';
     };
