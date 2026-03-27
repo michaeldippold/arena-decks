@@ -531,6 +531,13 @@ function decode(str) {
   return new TextDecoder().decode(bytes);
 }
 
+// ── Arena → Scryfall set code aliases ─────────────────────────────────────
+// Arena sometimes uses different set codes than Scryfall.
+
+const SET_ALIASES = {
+  'dar': 'dom',  // Dominaria: Arena=DAR, Scryfall=dom
+};
+
 // ── Arena decklist parser ──────────────────────────────────────────────────
 
 function parseDecklist(raw) {
@@ -551,7 +558,7 @@ function parseDecklist(raw) {
       out[section].push({
         count:  parseInt(m[1], 10),
         name:   m[2],
-        set:    m[3].toLowerCase(),
+        set:    SET_ALIASES[m[3].toLowerCase()] ?? m[3].toLowerCase(),
         number: m[4],
       });
     }
