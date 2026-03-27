@@ -427,6 +427,25 @@
       .card-item img { width: 90px; }
       .deck-wrap { padding: 1rem 0.75rem 2rem; }
     }
+
+    /* ── Footer ── */
+    .site-footer {
+      border-top: 1px solid var(--border);
+      padding: 1.5rem;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      line-height: 1.7;
+      margin-top: 2rem;
+    }
+
+    .site-footer a {
+      color: var(--text-muted);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .site-footer a:hover { color: var(--accent); }
   </style>
 </head>
 <body>
@@ -503,6 +522,14 @@
 
   </div>
 </div>
+
+<!-- ════════════════════ FOOTER ════════════════════ -->
+<footer class="site-footer">
+  Arena Decks is unofficial Fan Content permitted under the
+  <a href="https://company.wizards.com/en/legal/fancontentpolicy" target="_blank" rel="noopener">Fan Content Policy</a>.
+  Not approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast. ©Wizards of the Coast LLC.<br>
+  Card data and images provided by <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>.
+</footer>
 
 <!-- ════════════════════ MODAL ════════════════════ -->
 <div id="modal" onclick="handleModalClick(event)">
