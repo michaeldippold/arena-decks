@@ -348,7 +348,6 @@
     }
 
     .card-item img.loading-img {
-      /* placeholder aspect ratio while loading */
       aspect-ratio: 63/88;
     }
 
@@ -367,6 +366,24 @@
     }
 
     .card-item.hidden { display: none; }
+
+    /* ── Hover preview ── */
+    #hoverPreview {
+      position: fixed;
+      pointer-events: none;
+      z-index: 150;
+      opacity: 0;
+      transition: opacity 0.12s;
+      filter: drop-shadow(0 16px 48px rgba(0,0,0,0.85));
+    }
+
+    #hoverPreview.visible { opacity: 1; }
+
+    #hoverImg {
+      display: block;
+      width: 230px;
+      border-radius: 11px;
+    }
 
     /* ── Modal ── */
     #modal {
@@ -504,12 +521,12 @@
         >
       </div>
       <div class="pills" id="filterPills">
-        <button class="pill active" data-filter="all"         onclick="setFilter(this)">All</button>
-        <button class="pill"        data-filter="creature"    onclick="setFilter(this)">Creatures</button>
+        <button class="pill active" data-filter="all"          onclick="setFilter(this)">All</button>
+        <button class="pill"        data-filter="creature"     onclick="setFilter(this)">Creatures</button>
         <button class="pill"        data-filter="planeswalker" onclick="setFilter(this)">Planeswalkers</button>
-        <button class="pill"        data-filter="spell"       onclick="setFilter(this)">Spells</button>
-        <button class="pill"        data-filter="land"        onclick="setFilter(this)">Lands</button>
-        <button class="pill"        data-filter="sideboard"   onclick="setFilter(this)">Sideboard</button>
+        <button class="pill"        data-filter="spell"        onclick="setFilter(this)">Spells</button>
+        <button class="pill"        data-filter="land"         onclick="setFilter(this)">Lands</button>
+        <button class="pill"        data-filter="sideboard"    onclick="setFilter(this)">Sideboard</button>
       </div>
     </div>
 
@@ -531,6 +548,9 @@
   Not approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast. ©Wizards of the Coast LLC.<br>
   Card data and images provided by <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>.
 </footer>
+
+<!-- ════════════════════ HOVER PREVIEW ════════════════════ -->
+<div id="hoverPreview"><img id="hoverImg" src="" alt=""></div>
 
 <!-- ════════════════════ MODAL ════════════════════ -->
 <div id="modal" onclick="handleModalClick(event)">
@@ -570,7 +590,6 @@ async function hashDeck(text) {
 async function saveDeck(deckText) {
   const hash = await hashDeck(deckText);
 
-  // If this exact decklist was saved before, reuse the existing ID
   const checkRes = await fetch(
     `${SUPABASE_URL}/rest/v1/decks?deck_hash=eq.${encodeURIComponent(hash)}&select=id&limit=1`,
     { headers: SB_HEADERS }
@@ -578,7 +597,6 @@ async function saveDeck(deckText) {
   const existing = await checkRes.json();
   if (existing.length) return existing[0].id;
 
-  // New deck — insert with hash for future dedup
   const id  = generateId();
   const res = await fetch(`${SUPABASE_URL}/rest/v1/decks`, {
     method:  'POST',
@@ -596,7 +614,6 @@ async function loadDeckById(id) {
   );
   const rows = await res.json();
   if (!rows.length) throw new Error('Deck not found');
-  // Fire-and-forget: update last_accessed for future cleanup use
   fetch(`${SUPABASE_URL}/rest/v1/decks?id=eq.${encodeURIComponent(id)}`, {
     method:  'PATCH',
     headers: { ...SB_HEADERS, 'Content-Type': 'application/json' },
@@ -612,18 +629,30 @@ function decode(str) {
 }
 
 // ── Arena → Scryfall set code aliases ─────────────────────────────────────
-// Arena sometimes uses different set codes than Scryfall.
 
 const SET_ALIASES = {
   'dar': 'dom',  // Dominaria: Arena=DAR, Scryfall=dom
 };
 
-// ── Arena decklist parser ──────────────────────────────────────────────────
+// ── Decklist parsers ───────────────────────────────────────────────────────
+// Each card entry gets a lookupKey used to retrieve it from the Scryfall map:
+//   Arena exact:  "<set>/<collector_number>"
+//   Name-based:   "name:<lowercase card name>"
 
 function parseDecklist(raw) {
+  // Arena format: card lines end with (SET) collector_number
+  if (/^\d+\s+.+\s+\(\w+\)\s+\w+/m.test(raw)) return parseArena(raw);
+
+  // Named formats with Deck/Sideboard/Companion headers (MTGDecks, AetherHub, etc.)
+  if (/^(Deck|Sideboard|Companion)$/im.test(raw)) return parseNameWithHeaders(raw);
+
+  // MTGGoldfish: no headers, blank line separates main deck from sideboard
+  return parseGoldfish(raw);
+}
+
+function parseArena(raw) {
   const out = { companion: [], deck: [], sideboard: [] };
   let section = 'deck';
-
   for (const line of raw.split('\n')) {
     const t = line.trim();
     if (!t) continue;
@@ -631,46 +660,98 @@ function parseDecklist(raw) {
     if (low === 'companion') { section = 'companion'; continue; }
     if (low === 'deck')      { section = 'deck';      continue; }
     if (low === 'sideboard') { section = 'sideboard'; continue; }
-
-    // e.g. "4 Absorb (RNA) 151"
     const m = t.match(/^(\d+)\s+(.+?)\s+\((\w+)\)\s+(\w+)$/);
     if (m) {
-      out[section].push({
-        count:  parseInt(m[1], 10),
-        name:   m[2],
-        set:    SET_ALIASES[m[3].toLowerCase()] ?? m[3].toLowerCase(),
-        number: m[4],
-      });
+      const set = SET_ALIASES[m[3].toLowerCase()] ?? m[3].toLowerCase();
+      out[section].push({ count: parseInt(m[1], 10), name: m[2], set, number: m[4], lookupKey: `${set}/${m[4]}` });
     }
   }
+  return out;
+}
+
+function parseNameWithHeaders(raw) {
+  const out = { companion: [], deck: [], sideboard: [] };
+  let section = 'deck';
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    const low = t.toLowerCase();
+    if (low === 'companion') { section = 'companion'; continue; }
+    if (low === 'deck')      { section = 'deck';      continue; }
+    if (low === 'sideboard') { section = 'sideboard'; continue; }
+    const m = t.match(/^(\d+)\s+(.+)$/);
+    if (m) {
+      const name = m[2].trim();
+      out[section].push({ count: parseInt(m[1], 10), name, lookupKey: `name:${name.toLowerCase()}` });
+    }
+  }
+  return out;
+}
+
+function parseGoldfish(raw) {
+  // Split on blank lines: first block = main deck, second = sideboard
+  const out = { companion: [], deck: [], sideboard: [] };
+  const blocks = raw.trim().split(/\n\s*\n/);
+  const sectionKeys = ['deck', 'sideboard'];
+  blocks.forEach((block, i) => {
+    const sectionKey = sectionKeys[i] ?? 'sideboard';
+    for (const line of block.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      // Strip optional <variant>, [SET], (F) suffixes; capture name and optional [SET]
+      const m = t.match(/^(\d+)\s+(.+?)(?:\s+<[^>]*>)?(?:\s+\[(\w+)\])?(?:\s+\(F\))?$/);
+      if (m) {
+        const name = m[2].trim();
+        out[sectionKey].push({ count: parseInt(m[1], 10), name, lookupKey: `name:${name.toLowerCase()}` });
+      }
+    }
+  });
   return out;
 }
 
 // ── Scryfall batch fetch ───────────────────────────────────────────────────
 
 async function fetchCards(cards) {
-  // Deduplicate by set+number
-  const seen  = new Set();
-  const ids   = [];
+  // Split into two buckets: exact (set+number) and name-based
+  const seenExact = new Set();
+  const seenName  = new Set();
+  const exactIds  = [];
+  const nameIds   = [];
+
   for (const c of cards) {
-    const k = `${c.set}/${c.number}`;
-    if (!seen.has(k)) { seen.add(k); ids.push({ set: c.set, collector_number: c.number }); }
+    if (c.set && c.number) {
+      const k = `${c.set}/${c.number}`;
+      if (!seenExact.has(k)) { seenExact.add(k); exactIds.push({ set: c.set, collector_number: c.number }); }
+    } else {
+      const k = c.name.toLowerCase();
+      if (!seenName.has(k)) { seenName.add(k); nameIds.push({ name: c.name }); }
+    }
   }
 
   const map = {};
-  for (let i = 0; i < ids.length; i += 75) {
-    // Scryfall asks for a polite delay between requests
+
+  // Exact lookups — keyed by set/collector_number in the response
+  for (let i = 0; i < exactIds.length; i += 75) {
     if (i > 0) await new Promise(r => setTimeout(r, 100));
     const res  = await fetch('https://api.scryfall.com/cards/collection', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ identifiers: ids.slice(i, i + 75) }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifiers: exactIds.slice(i, i + 75) }),
     });
     const json = await res.json();
-    for (const card of (json.data || [])) {
-      map[`${card.set}/${card.collector_number}`] = card;
-    }
+    for (const card of (json.data || [])) map[`${card.set}/${card.collector_number}`] = card;
   }
+
+  // Name lookups — keyed by "name:<lowercase>" so they match lookupKey
+  for (let i = 0; i < nameIds.length; i += 75) {
+    if (i > 0) await new Promise(r => setTimeout(r, 100));
+    const res  = await fetch('https://api.scryfall.com/cards/collection', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifiers: nameIds.slice(i, i + 75) }),
+    });
+    const json = await res.json();
+    for (const card of (json.data || [])) map[`name:${card.name.toLowerCase()}`] = card;
+  }
+
   return map;
 }
 
@@ -681,10 +762,40 @@ function imageUris(card) {
 function cardType(card) {
   if (!card) return 'spell';
   const t = (card.type_line || '').toLowerCase();
-  if (t.includes('creature'))    return 'creature';
+  if (t.includes('creature'))     return 'creature';
   if (t.includes('planeswalker')) return 'planeswalker';
-  if (t.includes('land'))        return 'land';
+  if (t.includes('land'))         return 'land';
   return 'spell';
+}
+
+// ── Hover preview ─────────────────────────────────────────────────────────
+
+const hoverPreview = document.getElementById('hoverPreview');
+const hoverImg     = document.getElementById('hoverImg');
+const isTouchDevice = () => window.matchMedia('(hover: none)').matches;
+
+function positionPreview(e) {
+  const pad = 16;
+  const pw  = 230 + pad;
+  const ph  = 322 + pad; // approximate card height at 230px wide
+  let x = e.clientX + pad + 8;
+  let y = e.clientY - Math.round(ph / 3);
+  if (x + pw > window.innerWidth)  x = e.clientX - pw;
+  if (y + ph > window.innerHeight) y = window.innerHeight - ph - pad;
+  if (y < pad) y = pad;
+  hoverPreview.style.left = `${x}px`;
+  hoverPreview.style.top  = `${y}px`;
+}
+
+function showHoverPreview(e, url) {
+  if (isTouchDevice() || !url) return;
+  hoverImg.src = url;
+  positionPreview(e);
+  hoverPreview.classList.add('visible');
+}
+
+function hideHoverPreview() {
+  hoverPreview.classList.remove('visible');
 }
 
 // ── Render ────────────────────────────────────────────────────────────────
@@ -693,36 +804,33 @@ const TYPE_ORDER  = ['creature', 'planeswalker', 'spell', 'land'];
 const TYPE_LABELS = { creature: 'Creatures', planeswalker: 'Planeswalkers', spell: 'Spells', land: 'Lands' };
 
 function makeCardEl(entry, cardMap, sectionKey) {
-  const mapKey = `${entry.set}/${entry.number}`;
-  const lookup = cardMap[mapKey];
-  const uris   = imageUris(lookup);
+  const lookup  = cardMap[entry.lookupKey];
+  const uris    = imageUris(lookup);
 
   if (!lookup) {
-    console.warn(`[arena-decks] Card not found in Scryfall response:`, { name: entry.name, set: entry.set, number: entry.number, mapKey });
+    console.warn(`[arena-decks] Card not found:`, { name: entry.name, lookupKey: entry.lookupKey });
   } else if (!uris) {
-    console.warn(`[arena-decks] Card found but has no image_uris:`, { name: lookup.name, layout: lookup.layout, card_faces: lookup.card_faces });
-  } else if (!uris.small) {
-    console.warn(`[arena-decks] Card has image_uris but no 'small':`, { name: lookup.name, uris });
+    console.warn(`[arena-decks] No image_uris:`, { name: lookup.name, layout: lookup.layout });
   }
 
   const el = document.createElement('div');
   el.className = 'card-item';
-  el.dataset.name    = (lookup?.name ?? entry.name).toLowerCase();
-  el.dataset.type    = cardType(lookup);
-  el.dataset.section = sectionKey;
+  el.dataset.name     = (lookup?.name ?? entry.name).toLowerCase();
+  el.dataset.type     = cardType(lookup);
+  el.dataset.section  = sectionKey;
   el.dataset.typeLine = (lookup?.type_line ?? '').toLowerCase();
 
   const img = document.createElement('img');
-  img.alt     = lookup?.name ?? entry.name;
-  img.title   = lookup?.name ?? entry.name;
-  img.loading = 'lazy';
+  img.alt       = lookup?.name ?? entry.name;
+  img.title     = lookup?.name ?? entry.name;
+  img.loading   = 'lazy';
   img.className = 'loading-img';
 
   if (uris?.small) {
     img.src = uris.small;
-    img.onload = () => img.classList.remove('loading-img');
+    img.onload  = () => img.classList.remove('loading-img');
     img.onerror = () => {
-      console.error(`[arena-decks] Image failed to load for "${lookup?.name ?? entry.name}":`, uris.small);
+      console.error(`[arena-decks] Image load failed:`, uris.small);
       img.style.background = 'var(--surface2)';
       img.style.minHeight  = '161px';
     };
@@ -740,7 +848,15 @@ function makeCardEl(entry, cardMap, sectionKey) {
 
   el.appendChild(img);
 
-  const largeUrl = uris?.large ?? uris?.normal ?? uris?.small ?? '';
+  const largeUrl  = uris?.large  ?? uris?.normal ?? uris?.small ?? '';
+  const normalUrl = uris?.normal ?? uris?.large  ?? uris?.small ?? '';
+
+  // Desktop: hover shows floating preview; click opens hi-res modal
+  if (!isTouchDevice()) {
+    el.addEventListener('mouseenter', e => showHoverPreview(e, normalUrl));
+    el.addEventListener('mousemove',  positionPreview);
+    el.addEventListener('mouseleave', hideHoverPreview);
+  }
   el.addEventListener('click', () => largeUrl && openModal(largeUrl));
 
   return el;
@@ -752,43 +868,35 @@ function renderDeck(sections, cardMap) {
 
   const groups = [];
 
-  // Companion
   if (sections.companion.length) {
     const n = sections.companion.reduce((s, c) => s + c.count, 0);
     groups.push({ label: `Companion (${n})`, cards: sections.companion, key: 'companion' });
   }
 
-  // Main deck — split by type
   const byType = { creature: [], planeswalker: [], spell: [], land: [] };
-  for (const c of sections.deck) {
-    byType[cardType(cardMap[`${c.set}/${c.number}`])].push(c);
-  }
+  for (const c of sections.deck) byType[cardType(cardMap[c.lookupKey])].push(c);
   for (const type of TYPE_ORDER) {
     if (!byType[type].length) continue;
     const n = byType[type].reduce((s, c) => s + c.count, 0);
     groups.push({ label: `${TYPE_LABELS[type]} (${n})`, cards: byType[type], key: type });
   }
 
-  // Sideboard
   if (sections.sideboard.length) {
     const n = sections.sideboard.reduce((s, c) => s + c.count, 0);
     groups.push({ label: `Sideboard (${n})`, cards: sections.sideboard, key: 'sideboard' });
   }
 
   for (const g of groups) {
-    const section  = document.createElement('div');
+    const section = document.createElement('div');
     section.className = 'section';
-
-    const heading  = document.createElement('div');
+    const heading = document.createElement('div');
     heading.className = 'section-heading';
     heading.innerHTML = `<span class="section-name">${g.label}</span>`;
     section.appendChild(heading);
-
     const grid = document.createElement('div');
     grid.className = 'card-grid';
     for (const entry of g.cards) grid.appendChild(makeCardEl(entry, cardMap, g.key));
     section.appendChild(grid);
-
     container.appendChild(section);
   }
 
@@ -812,27 +920,17 @@ function setFilter(btn) {
 
 function applyFilters() {
   const q = (document.getElementById('searchInput')?.value ?? '').toLowerCase().trim();
-
   let anyVisible = false;
   document.querySelectorAll('.card-item').forEach(item => {
-    const matchSearch = !q
-      || item.dataset.name.includes(q)
-      || item.dataset.typeLine.includes(q);
-
-    const matchFilter = activeFilter === 'all'
-      || item.dataset.section === activeFilter
-      || item.dataset.type    === activeFilter;
-
+    const matchSearch = !q || item.dataset.name.includes(q) || item.dataset.typeLine.includes(q);
+    const matchFilter = activeFilter === 'all' || item.dataset.section === activeFilter || item.dataset.type === activeFilter;
     const visible = matchSearch && matchFilter;
     item.classList.toggle('hidden', !visible);
     if (visible) anyVisible = true;
   });
-
-  // Hide sections that are entirely empty
   document.querySelectorAll('.section').forEach(sec => {
     sec.style.display = sec.querySelectorAll('.card-item:not(.hidden)').length ? '' : 'none';
   });
-
   const noRes = document.getElementById('noResults');
   if (noRes) noRes.style.display = anyVisible ? 'none' : 'block';
 }
@@ -853,9 +951,7 @@ function handleModalClick(e) {
   if (e.target === document.getElementById('modal')) closeModal();
 }
 
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeModal();
-});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
 // ── Import & load ─────────────────────────────────────────────────────────
 
@@ -866,21 +962,14 @@ async function importDeck() {
 
   errEl.textContent = '';
 
-  if (!raw) {
-    errEl.textContent = 'Please paste an Arena decklist first.';
-    return;
-  }
+  if (!raw) { errEl.textContent = 'Please paste a decklist first.'; return; }
 
   const sections = parseDecklist(raw);
   const total    = sections.deck.reduce((s, c) => s + c.count, 0);
 
-  if (total === 0) {
-    errEl.textContent = 'No cards found — make sure to paste a valid Arena export.';
-    return;
-  }
+  if (total === 0) { errEl.textContent = 'No cards found — check that your paste is a valid decklist export.'; return; }
 
-  btn.disabled    = true;
-  btn.textContent = 'Saving…';
+  btn.disabled = true; btn.textContent = 'Saving…';
 
   try {
     const id  = await saveDeck(raw);
@@ -891,20 +980,19 @@ async function importDeck() {
     console.error('[arena-decks] Save failed:', err);
     errEl.textContent = 'Could not save deck — please try again.';
   } finally {
-    btn.disabled    = false;
-    btn.textContent = 'Import Deck';
+    btn.disabled = false; btn.textContent = 'Import Deck';
   }
 }
 
 async function showDeckPage(raw, url) {
   currentDeckText = raw;
-  document.getElementById('importPage').style.display = 'none';
-  document.getElementById('deckPage').style.display   = 'block';
+
+  document.getElementById('importPage').style.display    = 'none';
+  document.getElementById('deckPage').style.display      = 'block';
   document.getElementById('loadingState').style.display  = 'flex';
   document.getElementById('cardSections').style.display  = 'none';
   document.getElementById('noResults').style.display     = 'none';
 
-  // Reset controls
   document.getElementById('searchInput').value = '';
   activeFilter = 'all';
   document.querySelectorAll('.pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
@@ -916,7 +1004,6 @@ async function showDeckPage(raw, url) {
 
   document.getElementById('deckMeta').textContent =
     `${main} cards${comp}${side ? ` · ${side} sideboard` : ''}`;
-
   document.getElementById('shareUrl').textContent = url || location.href;
 
   try {
@@ -929,33 +1016,26 @@ async function showDeckPage(raw, url) {
   }
 }
 
+function copyUrl() {
+  navigator.clipboard.writeText(location.href).then(() => {
+    const btn = document.getElementById('copyBtn');
+    btn.textContent = 'Copied!'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy Link'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
 function exportToArena() {
   if (!currentDeckText) return;
   navigator.clipboard.writeText(currentDeckText).then(() => {
     const btn = document.getElementById('exportBtn');
-    btn.textContent = 'Copied!';
-    btn.classList.add('copied');
-    setTimeout(() => {
-      btn.textContent = 'Export to Arena';
-      btn.classList.remove('copied');
-    }, 2000);
-  });
-}
-
-function copyUrl() {
-  navigator.clipboard.writeText(location.href).then(() => {
-    const btn = document.getElementById('copyBtn');
-    btn.textContent = 'Copied!';
-    btn.classList.add('copied');
-    setTimeout(() => {
-      btn.textContent = 'Copy Link';
-      btn.classList.remove('copied');
-    }, 2000);
+    btn.textContent = 'Copied!'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Export to Arena'; btn.classList.remove('copied'); }, 2000);
   });
 }
 
 function showImport(e) {
   e.preventDefault();
+  hideHoverPreview();
   history.pushState(null, '', location.pathname);
   document.getElementById('deckPage').style.display   = 'none';
   document.getElementById('importPage').style.display = 'flex';
@@ -968,17 +1048,15 @@ function showImport(e) {
   const d      = params.get('d');
   if (!d) return;
 
-  // Short IDs are 8 chars (a-z0-9). Legacy LZString params are much longer.
   const isShortId = d.length <= 12;
 
-  if (isShortId) {
-    // Show deck page immediately with spinner while we fetch from DB
-    document.getElementById('importPage').style.display  = 'none';
-    document.getElementById('deckPage').style.display    = 'block';
-    document.getElementById('loadingState').style.display = 'flex';
-    document.getElementById('cardSections').style.display = 'none';
-    document.getElementById('noResults').style.display   = 'none';
+  document.getElementById('importPage').style.display   = 'none';
+  document.getElementById('deckPage').style.display     = 'block';
+  document.getElementById('loadingState').style.display = 'flex';
+  document.getElementById('cardSections').style.display = 'none';
+  document.getElementById('noResults').style.display    = 'none';
 
+  if (isShortId) {
     loadDeckById(d)
       .then(raw => showDeckPage(raw, location.href))
       .catch(() => {
@@ -986,12 +1064,12 @@ function showImport(e) {
           `<div style="color:var(--danger)">Deck not found or has expired.</div>`;
       });
   } else {
-    // Legacy: decklist was encoded directly in the URL
     try {
       const raw = decode(d);
       if (raw) showDeckPage(raw, location.href);
     } catch {
-      // malformed — just show import page
+      document.getElementById('importPage').style.display = 'flex';
+      document.getElementById('deckPage').style.display   = 'none';
     }
   }
 })();
